@@ -1,0 +1,20 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/lib/modules/$(uname -r)/build/include/**",
+                "/usr/src/linux-headers-$(uname -r)/include/**",
+                "/usr/src/linux-headers-$(uname -r)/arch/x86/include/**",
+                "/usr/src/linux-headers-$(uname -r)/arch/arm64/include/**"
+            ],
+            "defines": [],
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "c17",
+            "cppStandard": "gnu++17",
+            "intelliSenseMode": "linux-gcc-x64"
+        }
+    ],
+    "version": 4
+}
