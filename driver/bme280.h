@@ -1,0 +1,3 @@
+
+#define DEVICE_NAME "bme280"
+#define BME280_REG_CHIPID 0xD0

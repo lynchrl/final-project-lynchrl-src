@@ -3,8 +3,7 @@
 #include <linux/miscdevice.h>
 #include <linux/uaccess.h>
 
-#define DEVICE_NAME "bme280"
-#define BME280_REG_CHIPID 0xD0
+#include "bme280.h"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Ryan Lynch");
@@ -12,6 +11,12 @@ MODULE_DESCRIPTION("BME280 I2C Misc Driver");
 
 static ssize_t bme280_read(struct file *file, char __user *buf, size_t count, loff_t *offset)
 {
+    pr_info("BME280: Read called.\n");
+    // Only handling a single read for the initial/skeleton implementation.
+    if (*offset > 0)
+    {
+        return 0; // EOF
+    }
     char out_str[64];
     int len;
 
@@ -21,6 +26,7 @@ static ssize_t bme280_read(struct file *file, char __user *buf, size_t count, lo
         return -EFAULT;
     }
 
+    *offset += len;
     return len;
 }
 
