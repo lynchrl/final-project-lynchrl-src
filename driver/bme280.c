@@ -39,6 +39,7 @@ static struct miscdevice bme280_miscdev = {
     .minor = MISC_DYNAMIC_MINOR,
     .name = DEVICE_NAME, // This creates /dev/bme280
     .fops = &bme280_fops,
+    .mode = 0644,
 };
 
 static int __init bme280_init(void)
