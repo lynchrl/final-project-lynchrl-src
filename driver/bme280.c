@@ -81,6 +81,13 @@ static const struct i2c_device_id bme280_id_table[] = {
     {}};
 MODULE_DEVICE_TABLE(i2c, bme280_id_table);
 
+static const struct of_device_id bme280_of_ids[] = {
+    {
+        .compatible = "bosch,bme280",
+    },
+    {}};
+MODULE_DEVICE_TABLE(of, bme280_of_ids);
+
 static int bme280_probe(struct i2c_client *client)
 {
     pr_info("BME280: Probing device at address 0x%02x\n", client->addr);
@@ -102,6 +109,7 @@ static struct i2c_driver bme280_i2c_driver = {
     .driver = {
         .name = DEVICE_NAME,
         .owner = THIS_MODULE,
+        .of_match_table = bme280_of_ids,
     },
     .probe = bme280_probe,
     .remove = bme280_remove,
