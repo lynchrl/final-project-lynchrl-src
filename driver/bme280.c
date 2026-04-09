@@ -2,6 +2,8 @@
 #include <linux/fs.h>
 #include <linux/miscdevice.h>
 #include <linux/uaccess.h>
+#include <linux/i2c.h>
+#include <linux/cleanup.h>
 
 #include "bme280.h"
 
@@ -9,8 +11,13 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Ryan Lynch");
 MODULE_DESCRIPTION("BME280 I2C Misc Driver");
 
+static DEFINE_MUTEX(bme280_mutex);
+
+static struct i2c_client *bme280_client;
+
 static ssize_t bme280_read(struct file *file, char __user *buf, size_t count, loff_t *offset)
 {
+    guard(mutex)(&bme280_mutex);
     pr_info("BME280: Read called.\n");
     // Only handling a single read for the initial/skeleton implementation.
     if (*offset > 0)
