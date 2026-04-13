@@ -61,6 +61,7 @@ static ssize_t bme280_read(struct file *file, char __user *buf, size_t count, lo
         pr_err("BME280: Failed to copy data to user space\n");
         return -EFAULT;
     }
+    *offset = len;
     return len;
 }
 
