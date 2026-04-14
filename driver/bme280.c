@@ -25,7 +25,41 @@ MODULE_DESCRIPTION("BME280 I2C Misc Driver");
 
 static DEFINE_MUTEX(bme280_mutex);
 
-static struct i2c_client *bme280_client;
+static struct bme280_data *bme_data;
+
+// Adapted from https://github.com/raspberrypi/linux/blob/rpi-6.12.y/drivers/iio/pressure/bmp280-core.c#L487
+static s32 bme280_calc_t_fine(s32 adc_T, struct bme280_data *data)
+{
+    s32 var1, var2;
+
+    var1 = ((((adc_T >> 3) - ((s32)data->dig_T1 << 1))) * ((s32)data->dig_T2)) >> 11;
+    var2 = (((((adc_T >> 4) - ((s32)data->dig_T1)) * ((adc_T >> 4) - ((s32)data->dig_T1))) >> 12) * ((s32)data->dig_T3)) >> 14;
+
+    return var1 + var2;
+}
+
+static int read_calibrated_temp(struct bme280_data *data, s32 *temp)
+{
+    u8 raw_data[3];
+    s32 adc_T, t_fine;
+
+    guard(mutex)(&bme280_mutex);
+    if (!data || !data->client)
+    {
+        pr_err("BME280: No I2C client available for temperature read\n");
+        return -ENODEV;
+    }
+
+    if (i2c_smbus_read_i2c_block_data(data->client, BME280_REG_TEMP_MSB, 3, raw_data) < 0)
+    {
+        pr_err("BME280: Failed to read raw temperature data\n");
+        return -EFAULT;
+    }
+    adc_T = (raw_data[0] << 12) | (raw_data[1] << 4) | (raw_data[2] >> 4);
+    t_fine = bme280_calc_t_fine(adc_T, data);
+    *temp = (t_fine * 5 + 128) >> 8;
+    return 0;
+}
 
 static ssize_t bme280_read(struct file *file, char __user *buf, size_t count, loff_t *offset)
 {
@@ -34,23 +68,28 @@ static ssize_t bme280_read(struct file *file, char __user *buf, size_t count, lo
     {
         return 0; // EOF
     }
-    int chip_id, len;
     char ret_data[32];
-    guard(mutex)(&bme280_mutex);
-    if (!bme280_client)
+    int len, ret, t_int, t_frac;
+    s32 temp_calc;
+    ret = read_calibrated_temp(bme_data, &temp_calc);
+    if (ret < 0)
     {
-        pr_err("BME280: No I2C client available\n");
-        return -ENODEV;
+        pr_err("BME280: Failed to read calibrated temperature\n");
+        return ret;
     }
-    // Read the chip ID register to verify communication.
-    chip_id = i2c_smbus_read_byte_data(bme280_client, BME280_REG_CHIPID);
-    if (chip_id < 0)
+    t_int = temp_calc / 100;
+    t_frac = temp_calc % 100;
+
+    // Handle negatives.
+    if (temp_calc < 0 && t_int == 0)
     {
-        pr_err("BME280: Failed to read chip ID\n");
-        return chip_id;
+        len = snprintf(ret_data, sizeof(ret_data), "T:-0.%02d\n", abs(t_frac));
     }
-    pr_info("BME280: Chip ID read successfully: 0x%02x\n", chip_id);
-    len = snprintf(ret_data, sizeof(ret_data), "Chip ID: 0x%02x\n", chip_id);
+    else
+    {
+        len = snprintf(ret_data, sizeof(ret_data), "T:%d.%02d\n", t_int, abs(t_frac));
+    }
+
     if (len < 0)
     {
         pr_err("BME280: Failed to format output string\n");
@@ -93,16 +132,25 @@ static int bme280_probe(struct i2c_client *client)
 {
     pr_info("BME280: Probing device at address 0x%02x\n", client->addr);
     guard(mutex)(&bme280_mutex);
-    bme280_client = client;
-    // TODO: read calibration data and initialize the sensor.
+    // https://elixir.bootlin.com/linux/v6.12.61/source/drivers/base/devres.c#L816
+    bme_data = devm_kzalloc(&client->dev, sizeof(struct bme280_data), GFP_KERNEL);
+    if (!bme_data)
+    {
+        pr_err("BME280: Failed to allocate device data\n");
+        return -ENOMEM;
+    }
+    bme_data->client = client;
+    // Store calibration data and wake up the sensor.
+    bme_data->dig_T1 = i2c_smbus_read_word_data(client, BME280_REG_DIG_T1);
+    bme_data->dig_T2 = i2c_smbus_read_word_data(client, BME280_REG_DIG_T2);
+    bme_data->dig_T3 = i2c_smbus_read_word_data(client, BME280_REG_DIG_T3);
+    i2c_smbus_write_byte_data(client, BME280_REG_CTRL_MEAS, 0x23);
     return 0;
 }
 
 static void bme280_remove(struct i2c_client *client)
 {
     pr_info("BME280: Removing device at address 0x%02x\n", client->addr);
-    guard(mutex)(&bme280_mutex);
-    bme280_client = NULL;
 };
 
 // https:// elixir.bootlin.com/linux/v6.8/source/include/linux/i2c.h#L271
