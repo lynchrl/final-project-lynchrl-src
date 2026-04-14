@@ -9,6 +9,7 @@
  * - I2C client struct and related: https://elixir.bootlin.com/linux/v6.8/source/include/linux/i2c.h#L330
  * - https://github.com/raspberrypi/pico-examples/tree/master/i2c/bmp280_i2c
  * - https://github.com/raspberrypi/linux/blob/f76135166c099f776ed4dc4a94a073ffa9c2e1a4/drivers/iio/pressure/bmp280-i2c.c
+ * - https://github.com/raspberrypi/linux/blob/rpi-6.12.y/drivers/iio/pressure/bmp280-core.c
  */
 #include <linux/module.h>
 #include <linux/fs.h>
@@ -27,7 +28,9 @@ static DEFINE_MUTEX(bme280_mutex);
 
 static struct bme280_data *bme_data;
 
-// Adapted from https://github.com/raspberrypi/linux/blob/rpi-6.12.y/drivers/iio/pressure/bmp280-core.c#L487
+/*
+ * Calculate fine temperature from raw ADC value.
+ */
 static s32 bme280_calc_t_fine(s32 adc_T, struct bme280_data *data)
 {
     s32 var1, var2;
@@ -38,6 +41,9 @@ static s32 bme280_calc_t_fine(s32 adc_T, struct bme280_data *data)
     return var1 + var2;
 }
 
+/*
+ * Read raw temperature ADC value from the sensor.
+ */
 static int read_temp_adc(struct bme280_data *data, s32 *adc_T)
 {
     u8 raw_data[3];
@@ -57,6 +63,9 @@ static int read_temp_adc(struct bme280_data *data, s32 *adc_T)
     return 0;
 }
 
+/*
+ * Read calibrated temperature from the sensor.
+ */
 static int read_temp(struct bme280_data *data, s32 *temp)
 {
     s32 adc_T, t_fine;
@@ -71,6 +80,9 @@ static int read_temp(struct bme280_data *data, s32 *temp)
     return 0;
 }
 
+/*
+ * Read raw pressure ADC value from the sensor.
+ */
 static int read_pressure_adc(struct bme280_data *data, s32 *adc_P)
 {
     u8 raw_data[3];
@@ -116,6 +128,9 @@ static u32 bme280_calc_pressure(s32 adc_P, s32 t_fine, struct bme280_data *data)
     return (u32)p;
 }
 
+/*
+ * Read calibrated pressure from the sensor.
+ */
 static int read_pressure(struct bme280_data *data, s32 *pressure)
 {
     s32 adc_P, adc_T, t_fine;
@@ -210,7 +225,7 @@ static ssize_t bme280_read(struct file *file, char __user *buf, size_t count, lo
 
 static const struct file_operations bme280_fops = {
     .owner = THIS_MODULE,
-    .read = bme280_read,
+    .read = bme280_read, // Only read is supported.
 };
 
 static struct miscdevice bme280_miscdev = {
@@ -225,6 +240,7 @@ static const struct i2c_device_id bme280_id_table[] = {
     {}};
 MODULE_DEVICE_TABLE(i2c, bme280_id_table);
 
+// Match table for the device tree. Must match name in the overlay ("bosch,bme280").
 static const struct of_device_id bme280_of_ids[] = {
     {
         .compatible = "bosch,bme280",
@@ -236,6 +252,8 @@ static int bme280_probe(struct i2c_client *client)
 {
     pr_info("BME280: Probing device at address 0x%02x\n", client->addr);
     guard(mutex)(&bme280_mutex);
+    // Allocate zeroed memory for the bme280_data struct. Include reference to client
+    // to enable automatic freeing of the memory when device is removed. See:
     // https://elixir.bootlin.com/linux/v6.12.61/source/drivers/base/devres.c#L816
     bme_data = devm_kzalloc(&client->dev, sizeof(struct bme280_data), GFP_KERNEL);
     if (!bme_data)
@@ -244,7 +262,8 @@ static int bme280_probe(struct i2c_client *client)
         return -ENOMEM;
     }
     bme_data->client = client;
-    // Store calibration data and wake up the sensor.
+
+    // Retrieve and store calibration data from the sensor.
     bme_data->dig_T1 = i2c_smbus_read_word_data(client, BME280_REG_DIG_T1);
     bme_data->dig_T2 = i2c_smbus_read_word_data(client, BME280_REG_DIG_T2);
     bme_data->dig_T3 = i2c_smbus_read_word_data(client, BME280_REG_DIG_T3);
@@ -263,11 +282,6 @@ static int bme280_probe(struct i2c_client *client)
     return 0;
 }
 
-static void bme280_remove(struct i2c_client *client)
-{
-    pr_info("BME280: Removing device at address 0x%02x\n", client->addr);
-};
-
 // https:// elixir.bootlin.com/linux/v6.8/source/include/linux/i2c.h#L271
 static struct i2c_driver bme280_i2c_driver = {
     .driver = {
@@ -276,12 +290,12 @@ static struct i2c_driver bme280_i2c_driver = {
         .of_match_table = bme280_of_ids,
     },
     .probe = bme280_probe,
-    .remove = bme280_remove,
     .id_table = bme280_id_table,
 };
 
 static int __init bme280_init(void)
 {
+    // Register misc device and I2C driver.
     pr_info("BME280: Loading driver...\n");
     int ret = misc_register(&bme280_miscdev);
     if (ret)
