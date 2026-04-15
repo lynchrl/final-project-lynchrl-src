@@ -3,6 +3,12 @@
  * Author: Ryan Lynch
  * Description: A simple Linux kernel module to interface with the BME280 sensor over I2C on a Raspberry Pi.
  *
+ * The module registers a misc device as /dev/bme280, which can be read to obtain the current
+ * temperature, pressure, and humidity readings from the sensor in a human-readable format. The
+ * format of the output is:
+ *    "T:xx.xx,P:xxx.xx,H:xx\n"
+ * where T is temperature in °C, P is pressure in hPa, and H is humidity in %RH.
+ *
  * References used:
  * - BME280 datasheet: https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bme280-ds002.pdf
  * - Mutex guard: https://www.marcusfolkesson.se/blog/mutex-guards-in-the-linux-kernel/
@@ -10,6 +16,7 @@
  * - https://github.com/raspberrypi/pico-examples/tree/master/i2c/bmp280_i2c
  * - https://github.com/raspberrypi/linux/blob/f76135166c099f776ed4dc4a94a073ffa9c2e1a4/drivers/iio/pressure/bmp280-i2c.c
  * - https://github.com/raspberrypi/linux/blob/rpi-6.12.y/drivers/iio/pressure/bmp280-core.c
+ * - Other references linked in comments throughout the code.
  */
 #include <linux/module.h>
 #include <linux/fs.h>
@@ -155,14 +162,77 @@ static int read_pressure(struct bme280_data *data, s32 *pressure)
     return 0;
 }
 
+/*
+ * Read raw humidity ADC value from the sensor.
+ */
+static int read_humidity_adc(struct bme280_data *data, s32 *adc_H)
+{
+    u8 raw_data[2];
+    guard(mutex)(&bme280_mutex);
+    if (!data || !data->client)
+    {
+        pr_err("BME280: No I2C client available for humidity read\n");
+        return -ENODEV;
+    }
+
+    if (i2c_smbus_read_i2c_block_data(data->client, BME280_REG_HUM_MSB, 2, raw_data) < 0)
+    {
+        pr_err("BME280: Failed to read raw humidity data\n");
+        return -EFAULT;
+    }
+    *adc_H = (raw_data[0] << 8) | raw_data[1];
+    return 0;
+}
+
+// Section 4.2.3 in https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bme280-ds002.pdf
+static int bme280_calc_humidity(s32 adc_H, s32 t_fine, struct bme280_data *data)
+{
+    s32 var;
+
+    var = t_fine - 76800;
+    var = (((((adc_H << 14) - ((s32)data->dig_H4 << 20) - ((s32)data->dig_H5 * var)) + 16384) >> 15) * (((((((var * (s32)data->dig_H6) >> 10) * (((var * (s32)data->dig_H3) >> 11) + 32768)) >> 10) + 2097152) * (s32)data->dig_H2 + 8192) >> 14));
+    var -= (((((var >> 15) * (var >> 15)) >> 7) * (s32)data->dig_H1) >> 4);
+    var = max(var, 0);
+    var = min(var, 419430400);
+    return var >> 12;
+}
+
+/*
+ * Read calibrated humidity from the sensor.
+ */
+static int read_humidity(struct bme280_data *data, s32 *humidity)
+{
+    s32 adc_H, adc_T, t_fine;
+    int ret;
+
+    ret = read_humidity_adc(data, &adc_H);
+    if (ret < 0)
+    {
+        pr_err("BME280: Failed to read raw humidity data\n");
+        return ret;
+    }
+
+    ret = read_temp_adc(data, &adc_T);
+    if (ret < 0)
+    {
+        pr_err("BME280: Failed to read raw temperature data\n");
+        return ret;
+    }
+
+    t_fine = bme280_calc_t_fine(adc_T, data);
+    *humidity = bme280_calc_humidity(adc_H, t_fine, data);
+
+    return 0;
+}
+
 static ssize_t bme280_read(struct file *file, char __user *buf, size_t count, loff_t *offset)
 {
     if (*offset != 0)
     {
         return 0; // EOF
     }
-    char temp_string[32], pressure_string[32];
-    char output_string[64];
+    char temp_string[32], pressure_string[32], humidity_string[32];
+    char output_string[96];
     int len, total_len, ret, t_int, t_frac;
     s32 temp_calc;
 
@@ -200,14 +270,32 @@ static ssize_t bme280_read(struct file *file, char __user *buf, size_t count, lo
         return ret;
     }
     pressure_calc = pressure_calc / 256; // Convert from Q24.8 to Pa
-    len = snprintf(pressure_string, sizeof(pressure_string), "P:%u.%02u", pressure_calc / 100, pressure_calc % 100);
+    len = snprintf(pressure_string, sizeof(pressure_string),
+                   "P:%u.%02u", pressure_calc / 100, pressure_calc % 100);
     if (len < 0)
     {
         pr_err("BME280: Failed to format pressure string\n");
         return len;
     }
 
-    total_len = snprintf(output_string, sizeof(output_string), "%s,%s\n", temp_string, pressure_string);
+    // Read and format humidity.
+    s32 humidity_calc;
+    ret = read_humidity(bme_data, &humidity_calc);
+    if (ret < 0)
+    {
+        pr_err("BME280: Failed to read calibrated humidity\n");
+        return ret;
+    }
+    humidity_calc = humidity_calc / 1024; // Convert from Q20.12 to %RH
+    len = snprintf(humidity_string, sizeof(humidity_string), "H:%u", humidity_calc);
+    if (len < 0)
+    {
+        pr_err("BME280: Failed to format humidity string\n");
+        return len;
+    }
+
+    total_len = snprintf(output_string, sizeof(output_string),
+                         "%s,%s,%s\n", temp_string, pressure_string, humidity_string);
     if (total_len < 0)
     {
         pr_err("BME280: Failed to format output string\n");
@@ -267,6 +355,7 @@ static int bme280_probe(struct i2c_client *client)
     bme_data->dig_T1 = i2c_smbus_read_word_data(client, BME280_REG_DIG_T1);
     bme_data->dig_T2 = i2c_smbus_read_word_data(client, BME280_REG_DIG_T2);
     bme_data->dig_T3 = i2c_smbus_read_word_data(client, BME280_REG_DIG_T3);
+
     bme_data->dig_P1 = i2c_smbus_read_word_data(client, BME280_REG_DIG_P1);
     bme_data->dig_P2 = i2c_smbus_read_word_data(client, BME280_REG_DIG_P2);
     bme_data->dig_P3 = i2c_smbus_read_word_data(client, BME280_REG_DIG_P3);
@@ -276,6 +365,17 @@ static int bme280_probe(struct i2c_client *client)
     bme_data->dig_P7 = i2c_smbus_read_word_data(client, BME280_REG_DIG_P7);
     bme_data->dig_P8 = i2c_smbus_read_word_data(client, BME280_REG_DIG_P8);
     bme_data->dig_P9 = i2c_smbus_read_word_data(client, BME280_REG_DIG_P9);
+
+    bme_data->dig_H1 = i2c_smbus_read_byte_data(client, BME280_REG_DIG_H1);
+    bme_data->dig_H2 = i2c_smbus_read_word_data(client, BME280_REG_DIG_H2);
+    bme_data->dig_H3 = i2c_smbus_read_byte_data(client, BME280_REG_DIG_H3);
+    // https://github.com/esphome/issues/issues/6174#issuecomment-2325455780
+    bme_data->dig_H4 = (i2c_smbus_read_byte_data(client, BME280_REG_DIG_H4) << 4) | (i2c_smbus_read_byte_data(client, BME280_REG_DIG_H4 + 1) & 0x0F);
+    bme_data->dig_H5 = (i2c_smbus_read_byte_data(client, BME280_REG_DIG_H5) << 4) | (i2c_smbus_read_byte_data(client, BME280_REG_DIG_H5 + 1) >> 4);
+    bme_data->dig_H6 = i2c_smbus_read_byte_data(client, BME280_REG_DIG_H6);
+
+    // Enable humidity oversampling (section 3.2 in the datasheet).
+    i2c_smbus_write_byte_data(client, BME280_REG_CTRL_HUM, 0x01);
 
     // Enable normal mode, temp and pressure oversampling (section 3.2 in the datasheet).
     i2c_smbus_write_byte_data(client, BME280_REG_CTRL_MEAS, 0x27);
