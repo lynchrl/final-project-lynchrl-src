@@ -16,7 +16,6 @@ import (
 	"os"
 	"time"
 
-	// "service/bme280"
 	"github.com/lynchrl/final-project-lynchrl-src/service/bme280"
 )
 
