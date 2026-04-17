@@ -10,6 +10,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -20,14 +21,30 @@ import (
 )
 
 const (
-	bme280Device = "/tmp/bme280"
-	logFilePath  = "/tmp/bme280.log"
+	logFilePath = "/tmp/bme280.log"
 )
 
+var (
+	readInterval = flag.Duration("read_interval", 10*time.Second, "Interval between sensor reads")
+	devicePath   = flag.String("device_path", "", "Path to the BME280 device file")
+)
+
+type BMEFile interface {
+	Read(p []byte) (int, error)
+	Seek(offset int64, whence int) (int64, error)
+	Close() error
+}
+
 func main() {
-	// Open the BME280 device for reading.
-	// TODO(lynchrl/final-project-lynchrl#11): Replace with os.Open on the actual device.
-	bmeDevice, err := bme280.Open(bme280Device)
+	flag.Parse()
+
+	var bmeDevice BMEFile
+	var err error
+	if *devicePath == "" {
+		bmeDevice, err = bme280.Open("")
+	} else {
+		bmeDevice, err = os.Open(*devicePath)
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -57,8 +74,8 @@ func main() {
 			log.Printf("Error reading from BME280: %v", err)
 		}
 
-		// Wait for 10 seconds before the next read.
-		time.Sleep(10 * time.Second)
+		// Wait for the specified interval before the next read.
+		time.Sleep(*readInterval)
 		bmeDevice.Seek(0, 0) // Reset the file offset to the beginning for the next read.
 	}
 }
