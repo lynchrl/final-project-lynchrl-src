@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BME280 Sensor Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background-color: #f4f4f9;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+        .chart-wrapper {
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            padding: 20px;
+            margin-bottom: 20px;
+            position: relative;
+            height: 300px;
+        }
+        h1 {
+            text-align: center;
+            color: #2c3e50;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>BME280 Sensor Dashboard</h1>
+        
+        <div class="chart-wrapper">
+            <canvas id="tempChart"></canvas>
+        </div>
+        <div class="chart-wrapper">
+            <canvas id="pressChart"></canvas>
+        </div>
+        <div class="chart-wrapper">
+            <canvas id="humChart"></canvas>
+        </div>
+
+        <!-- Refresh button for manual data fetch -->
+        <div style="text-align: center; margin-top: 20px;">
+            <button onclick="fetchData()" style="padding: 10px 20px; background-color: #3498db; color: white; border: none; border-radius: 5px; cursor: pointer;">Refresh Data</button>
+        </div>
+    </div>
+
+    <script>
+        async function fetchData() {
+            try {
+                const response = await fetch('/api/data');
+                const data = await response.json();
+
+                // Extract data arrays
+                const labels = data.map(d => new Date(d.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}));
+                const temperatures = data.map(d => d.temperature);
+                const pressures = data.map(d => d.pressure);
+                const humidities = data.map(d => d.humidity);
+
+                renderCharts(labels, temperatures, pressures, humidities);
+            } catch (error) {
+                console.error("Error fetching sensor data:", error);
+            }
+        }
+
+        function createChart(ctxId, label, color, labels, dataSet) {
+            const ctx = document.getElementById(ctxId).getContext('2d');
+            const existingChart = Chart.getChart(ctxId);
+            if (existingChart) {
+                existingChart.destroy();
+            }
+
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: label,
+                        data: dataSet,
+                        borderColor: color,
+                        backgroundColor: color + '33', // Add transparency
+                        borderWidth: 2,
+                        pointRadius: 0, // Hides points for a smoother look on large datasets
+                        fill: true,
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { position: 'top' } },
+                    scales: {
+                        x: { grid: { display: false } },
+                        y: { beginAtZero: false }
+                    }
+                }
+            });
+        }
+
+        function renderCharts(labels, temp, press, hum) {
+            createChart('tempChart', 'Temperature (°C)', '#e74c3c', labels, temp);
+            createChart('pressChart', 'Pressure (hPa)', '#3498db', labels, press);
+            createChart('humChart', 'Humidity (%)', '#2ecc71', labels, hum);
+        }
+
+        // Fetch data and render on load
+        window.onload = fetchData;
+    </script>
+</body>
+</html>

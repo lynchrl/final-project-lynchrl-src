@@ -26,6 +26,8 @@ var (
 	readInterval = flag.Duration("read_interval", 10*time.Second, "Interval between sensor reads")
 	devicePath   = flag.String("device_path", "/dev/bme280", "Path to the BME280 device file")
 	dbPath       = flag.String("db_path", "/tmp/bme280.db", "Path to the SQLite3 database file")
+	httpPort     = flag.String("http_port", "8080", "Port for the web server to listen on")
+	servRoot     = flag.String("serv_root", "./", "Root directory for serving static files")
 )
 
 func main() {
@@ -51,6 +53,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	go startWebServer(db, *httpPort, *servRoot)
 
 	// Loop forever, reading from the BME280 and writing to the database every 10 seconds.
 	for {
